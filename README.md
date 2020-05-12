@@ -73,7 +73,7 @@ Proper functionality of the shell requires modifying GNOME's default keyboard sh
 
 This will call `make` to transpile the TypeScript source code into GJS-compatible JavaScript sources, followed by `make install` to install it locally into `~/.local/share/gnome-shell/extensions`, and modifying the default keyboard shortcuts in GNOME.
 
-If you want to uninstall the extension, you may invoke `make uninstall`, and then open the "Keyboard Shortcuts" panel in GNOME Settings to select the "Reset All.." button in the header bar.
+If you want to uninstall the extension, you may invoke `make uninstall`, which will also restore your previous shortcuts.
 
 ---
 
