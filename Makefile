@@ -61,6 +61,7 @@ install:
 
 uninstall:
 	rm -rf $(INSTALLBASE)/$(INSTALLNAME)
+	./restoreshortcuts
 
 restart-shell:
 	echo "Restart shell!"
