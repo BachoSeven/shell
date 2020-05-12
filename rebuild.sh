@@ -17,7 +17,7 @@ KEYS_MEDIA=/org/gnome/settings-daemon/plugins/media-keys
 ## Shortcuts: we save current bindings before overwriting
 
 # Disable incompatible shortcuts
-# Restore all default keyboard shortcuts: disable <Super>Escape
+# Restore the keyboard shortcuts: disable <Super>Escape
 echo "\"$(dconf read /org/gnome/mutter/wayland/keybindings/restore-shortcuts)\"" >> shortcuts_tmp
 dconf write /org/gnome/mutter/wayland/keybindings/restore-shortcuts "@as []"
 # Hide window: disable <Super>h
