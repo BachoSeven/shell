@@ -1,15 +1,14 @@
 const Me = imports.misc.extensionUtils.getCurrentExtension();
 
-import * as auto_tiler from 'auto_tiler';
+// import * as auto_tiler from 'auto_tiler';
 import * as Log from 'log';
 
-import type { Entity } from './ecs';
+//import type { Entity } from './ecs';
 import type { Ext } from './extension';
 
 const { Clutter, Gio, St } = imports.gi;
 const { PopupBaseMenuItem, PopupMenuItem, PopupSwitchMenuItem, PopupSeparatorMenuItem } = imports.ui.popupMenu;
 const { Button } = imports.ui.panelMenu;
-const { Forest } = Me.imports.forest;
 const GLib: GLib = imports.gi.GLib;
 
 export class Indicator {
@@ -18,12 +17,24 @@ export class Indicator {
 
     constructor(ext: Ext) {
         this.button = new Button(0.0, _("Pop Shell Settings"));
+        ext.button = this.button;
+        ext.button_gio_icon_auto_on = Gio.icon_new_for_string(`${Me.path}/icons/pop-shell-auto-on-symbolic.svg`);
+        ext.button_gio_icon_auto_off = Gio.icon_new_for_string(`${Me.path}/icons/pop-shell-auto-off-symbolic.svg`);
 
-        const icon_path = `${Me.path}/icons/pop-shell-symbolic.svg`;
-        this.button.icon = new St.Icon({
-            gicon: Gio.icon_new_for_string(icon_path),
+        let button_icon_auto_on = new St.Icon({
+            gicon: ext.button_gio_icon_auto_on ,
             style_class: "system-status-icon",
         });
+        let button_icon_auto_off = new St.Icon({
+            gicon:  ext.button_gio_icon_auto_off,
+            style_class: "system-status-icon",
+        });
+
+        if (ext.settings.tile_by_default()){
+            this.button.icon = button_icon_auto_on;
+        } else {
+            this.button.icon = button_icon_auto_off;
+        }
 
         this.button.add_actor(this.button.icon);
 
@@ -54,6 +65,10 @@ export class Indicator {
                 }
             )
         )
+    }
+
+    destroy() {
+        this.button.destroy();
     }
 }
 
@@ -107,22 +122,23 @@ function shortcuts(menu: any): any {
         return label;
     }
 
-    let launcher = create_label(_('Launcher'));
-    launcher.get_clutter_text().set_margin_left(12);
-    let navigate_windows = create_label(_('Navigate Windows'));
-    navigate_windows.get_clutter_text().set_margin_left(12);
-
-    // Shortcut items
-    let launcher_shortcut = create_shortcut_label(_('Super + /'));
-    let navigate_windows_shortcut = create_shortcut_label(_('Super + Arrow Keys'));
-
     layout_manager.set_row_spacing(12);
     layout_manager.set_column_spacing(30);
     layout_manager.attach(create_label(_('Shortcuts')), 0, 0, 2, 1);
-    layout_manager.attach(launcher, 0, 1, 1, 1);
-    layout_manager.attach(launcher_shortcut, 1, 1, 1, 1);
-    layout_manager.attach(navigate_windows, 0, 2, 1, 1);
-    layout_manager.attach(navigate_windows_shortcut, 1, 2, 1, 1);
+
+    [
+        [_('Launcher'), _('Super + /')],
+        [_('Navigate Windows'), _('Super + Arrow Keys')],
+        [_('Toggle Tiling'), _('Super + Y')],
+    ].forEach((section, idx) => {
+        let key = create_label(section[0]);
+        key.get_clutter_text().set_margin_left(12);
+
+        let val = create_shortcut_label(section[1]);
+
+        layout_manager.attach(key, 0, idx + 1, 1, 1);
+        layout_manager.attach(val, 1, idx + 1, 1, 1);
+    });
 
     return item;
 }
@@ -226,7 +242,6 @@ function toggle(desc: string, active: boolean, connect: (toggle: any) => void): 
 
     toggle.connect('toggled', () => {
         connect(toggle);
-
         return true;
     });
 
@@ -234,48 +249,7 @@ function toggle(desc: string, active: boolean, connect: (toggle: any) => void): 
 }
 
 function tiled(ext: Ext): any {
-    return toggle(_("Tile Windows"), null != ext.auto_tiler, () => {
-        if (ext.auto_tiler) {
-            Log.info(`tile by default disabled`);
-            ext.unregister_storage(ext.auto_tiler.attached);
-            ext.auto_tiler = null;
-            ext.settings.set_tile_by_default(false);
-        } else {
-            Log.info(`tile by default enabled`);
-
-            const original = ext.active_workspace();
-
-            let tiler = new auto_tiler.AutoTiler(
-                new Forest()
-                    .connect_on_attach((entity: Entity, window: Entity) => {
-                        tiler.attached.insert(window, entity);
-                    }),
-                ext.register_storage()
-            );
-
-            ext.auto_tiler = tiler;
-
-            ext.settings.set_tile_by_default(true);
-
-            for (const window of ext.windows.values()) {
-                if (window.is_tilable(ext)) {
-                    let actor = window.meta.get_compositor_private();
-                    if (actor) {
-                        let ws = window.meta.get_workspace();
-                        if (!window.meta.minimized) {
-                            tiler.auto_tile(ext, window, false);
-                        }
-
-                        if (ws === null || ws.index() !== original) {
-                            actor.hide()
-                        } else {
-                            actor.show();
-                        }
-                    }
-                }
-            }
-
-            ext.register_fn(() => ext.switch_to_workspace(original));
-        }
-    });
+    let t = toggle(_("Tile Windows"), null != ext.auto_tiler, () => ext.toggle_tiling());
+    ext.tiling_toggle_switch = t;  // property _switch is the actual UI element
+    return t;
 }

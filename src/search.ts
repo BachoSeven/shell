@@ -2,16 +2,15 @@
 const Me = imports.misc.extensionUtils.getCurrentExtension();
 
 import * as Lib from 'lib';
-import * as widgets from 'widgets';
 
-const { Clutter, Pango, St } = imports.gi;
+const { Clutter, St } = imports.gi;
 const { ModalDialog } = imports.ui.modalDialog;
 
 export class Search {
     dialog: Shell.ModalDialog;
 
     private active_id: number;
-    private ignore_prefixes: Array<string>;
+    private mode_prefixes: Array<string>;
     private entry: St.Entry;
     private list: St.Widget;
     private text: Clutter.Text;
@@ -20,11 +19,11 @@ export class Search {
     private select_cb: (id: number) => void;
 
     constructor(
-        ignore_prefixes: Array<string>,
+        mode_prefixes: Array<string>,
         cancel: () => void,
-        search: (pattern: string) => Array<[string, St.Widget, St.Widget]> | null,
+        search: (pattern: string) => Array<St.Widget> | null,
         select: (id: number) => void,
-        apply: (id: number | string) => boolean,
+        apply: (text: string, index: number) => boolean,
         mode: (id: number) => void,
     ) {
         this.select_cb = select;
@@ -37,7 +36,7 @@ export class Search {
         });
 
         this.active_id = 0;
-        this.ignore_prefixes = ignore_prefixes;
+        this.mode_prefixes = mode_prefixes;
         this.widgets = [];
 
         this.entry = new St.Entry({
@@ -50,13 +49,7 @@ export class Search {
 
         this.text.connect("activate", () => {
             const text: string = this.text.get_text();
-            let cont = false;
-
-            if (this.has_prefix(text) !== -1) {
-                cont = apply(text);
-            } else if (this.active_id < this.widgets.length) {
-                cont = apply(this.active_id);
-            }
+            const cont = apply(text, this.active_id);
 
             if (!cont) {
                 this.reset();
@@ -68,14 +61,12 @@ export class Search {
         this.text.connect("text-changed", (entry: any) => {
             this.clear();
 
-            const text = (entry as Clutter.Text).get_text();
+            const text = (entry as Clutter.Text).get_text().trim();
 
             let prefix = this.has_prefix(text);
             mode(prefix);
 
-            if (prefix !== -1) return;
-
-            const update = search(text.toLowerCase());
+            const update = search((prefix === -1) ? text.toLowerCase() : text);
             if (update) {
                 this.update_search_list(update);
             }
@@ -104,12 +95,22 @@ export class Search {
                     this.active_id -= 1;
                     this.select();
                 }
+                else if (this.active_id == 0) {
+                	this.unselect();
+                	this.active_id = this.widgets.length - 1;
+                	this.select();
+                }
             } else if (c == 65364 || (s == Clutter.ModifierType.CONTROL_MASK && c == 106)) {
                 // Down arrow was pressed
                 if (this.active_id + 1 < this.widgets.length) {
                     this.unselect();
                     this.active_id += 1;
                     this.select();
+                }
+                else if (this.active_id + 1 == this.widgets.length) {
+                	this.unselect();
+                	this.active_id = 0;
+                	this.select();
                 }
             }
 
@@ -139,6 +140,14 @@ export class Search {
         this.dialog.close(global.get_current_time());
     }
 
+    icon_size() {
+        return 34;
+    }
+
+    list_max() {
+        return 8;
+    }
+
     reset() {
         this.clear();
         this.text.set_text(null);
@@ -162,31 +171,12 @@ export class Search {
         );
     }
 
-    update_search_list(list: Array<[string, St.Widget, St.Widget]>) {
+    update_search_list(list: Array<St.Widget>) {
         Lib.join(
             list.values(),
-            (element: [string, St.Widget, St.Widget]) => {
-                const [title, cat_icon, icon] = element;
-
-                cat_icon.set_y_align(Clutter.ActorAlign.CENTER);
-                icon.set_y_align(Clutter.ActorAlign.CENTER);
-
-                let label = new St.Label({
-                    text: title,
-                    styleClass: "pop-shell-search-label",
-                    y_align: Clutter.ActorAlign.CENTER
-                });
-
-                label.clutter_text.set_ellipsize(Pango.EllipsizeMode.END);
-
-                let container = new widgets.Box({ styleClass: "pop-shell-search-element" })
-                    .add(cat_icon)
-                    .add(icon)
-                    .add(label)
-                    .container;
-
-                this.widgets.push(container);
-                this.list.add(container);
+            (element: St.Widget) => {
+                this.widgets.push(element);
+                this.list.add(element);
             },
             () => this.list.add(Lib.separator())
         );
@@ -203,6 +193,6 @@ export class Search {
     }
 
     private has_prefix(text: string): number {
-        return this.ignore_prefixes.findIndex((p) => text.startsWith(p));
+        return this.mode_prefixes.findIndex((p) => text.startsWith(p));
     }
 }

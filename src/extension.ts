@@ -76,6 +76,10 @@ export class Ext extends Ecs.System<ExtEvent> {
     /** Animate window movements */
     animate_windows: boolean = true;
 
+    button: any = null;
+    button_gio_icon_auto_on: any = null;
+    button_gio_icon_auto_off: any = null;
+
     /** Column sizes in snap-to-grid */
     column_size: number = 32;
 
@@ -120,6 +124,8 @@ export class Ext extends Ecs.System<ExtEvent> {
 
     tween_signals: Map<string, [SignalID, any]> = new Map();
 
+    tiling_toggle_switch: any = null;  /** reference to the PopupSwitchMenuItem menu item, so state can be toggled */
+
     /** Initially set to true when the extension is initializing */
     init: boolean = true;
 
@@ -152,6 +158,9 @@ export class Ext extends Ecs.System<ExtEvent> {
 
     /** Primary storage for the window entities, containing the actual window */
     windows: Ecs.Storage<Window.ShellWindow> = this.register_storage();
+
+    /** Signals which have been registered for each window */
+    window_signals: Ecs.Storage<Array<SignalID>> = this.register_storage();
 
     // Systems
 
@@ -347,23 +356,33 @@ export class Ext extends Ecs.System<ExtEvent> {
     }
 
     connect_meta(win: Window.ShellWindow, signal: string, callback: (...args: any[]) => void): number {
-        return win.meta.connect(signal, () => {
+        const id = win.meta.connect(signal, () => {
             if (win.actor_exists()) callback();
+        });
+
+        this.window_signals.get_or(win.entity, () => new Array()).push(id);
+
+        return id;
+    }
+
+    connect_size_signal(win: Window.ShellWindow, signal: string, func: () => void): number {
+        return this.connect_meta(win, signal, () => {
+            if (!this.contains_tag(win.entity, Tags.Blocked)) func();
         });
     }
 
     connect_window(win: Window.ShellWindow) {
         this.size_signals.insert(win.entity, [
-            this.connect_meta(win, 'size-changed', () => {
+            this.connect_size_signal(win, 'size-changed', () => {
                 this.register(Events.window_event(win, WindowEvent.Size));
             }),
-            this.connect_meta(win, 'position-changed', () => {
+            this.connect_size_signal(win, 'position-changed', () => {
                 this.register(Events.window_event(win, WindowEvent.Size));
             }),
-            this.connect_meta(win, 'workspace-changed', () => {
+            this.connect_size_signal(win, 'workspace-changed', () => {
                 this.register(Events.window_event(win, WindowEvent.Workspace));
             }),
-            this.connect_meta(win, 'notify::minimized', () => {
+            this.connect_size_signal(win, 'notify::minimized', () => {
                 this.register(Events.window_event(win, WindowEvent.Minimize));
             }),
         ]);
@@ -462,6 +481,15 @@ export class Ext extends Ecs.System<ExtEvent> {
     }
 
     on_destroy(win: Entity) {
+        // Disconnect all signals on this window
+        this.window_signals.take_with(win, (signals) => {
+            this.windows.with(win, (window) => {
+                for (const signal of signals) {
+                    window.meta.disconnect(signal);
+                }
+            });
+        });
+
         if (this.last_focused == win) {
             this.active_hint?.untrack();
 
@@ -476,6 +504,13 @@ export class Ext extends Ecs.System<ExtEvent> {
                     }
                 }
             }
+        }
+
+        const str = String(win);
+        let value = this.tween_signals.get(str);
+        if (value) {
+            utils.source_remove(value[0]);
+            this.tween_signals.delete(str);
         }
 
         if (this.auto_tiler) this.auto_tiler.detach_window(this, win);
@@ -551,7 +586,7 @@ export class Ext extends Ecs.System<ExtEvent> {
             let prev = this.windows.get(this.prev_focused);
             let is_attached = this.auto_tiler.attached.contains(this.prev_focused);
 
-            if (prev && is_attached && prev.actor_exists() && prev.rect().contains(win.rect())) {
+            if (prev && prev !== win && is_attached && prev.actor_exists() && prev.rect().contains(win.rect())) {
                 if (prev.is_maximized()) {
                     prev.meta.unmaximize(Meta.MaximizeFlags.BOTH);
                 }
@@ -639,6 +674,11 @@ export class Ext extends Ecs.System<ExtEvent> {
         }
 
         this.size_signals_unblock(win);
+
+        if (win.meta && win.meta.minimized) {
+            this.on_minimize(win);
+            return;
+        }
 
         if (win.is_maximized()) {
             return;
@@ -1053,7 +1093,7 @@ export class Ext extends Ecs.System<ExtEvent> {
 
         // Modes
 
-        if (this.settings.tile_by_default() && !this.auto_tiler) {
+        if (this.settings.tile_by_default() && !this.auto_tiler && !utils.is_wayland()) {
             Log.info(`tile by default enabled`);
 
             this.auto_tiler = new auto_tiler.AutoTiler(
@@ -1097,23 +1137,11 @@ export class Ext extends Ecs.System<ExtEvent> {
     }
 
     size_signals_block(win: Window.ShellWindow) {
-        this.size_signals.with(win.entity, (signals) => {
-            for (const signal of signals) {
-                utils.block_signal(win.meta, signal);
-            }
-            this.add_tag(win.entity, Tags.Blocked);
-        });
+        this.add_tag(win.entity, Tags.Blocked);
     }
 
     size_signals_unblock(win: Window.ShellWindow) {
-        // if (!this.contains_tag(win.entity, Tags.Blocked)) return;
-
-        this.size_signals.with(win.entity, (signals) => {
-            for (const signal of signals) {
-                utils.unblock_signal(win.meta, signal);
-            };
-            this.delete_tag(win.entity, Tags.Blocked);
-        });
+        this.delete_tag(win.entity, Tags.Blocked);
     }
 
     // Snaps all windows to the window grid
@@ -1142,6 +1170,50 @@ export class Ext extends Ecs.System<ExtEvent> {
         }
     }
 
+    toggle_tiling() {
+        if (utils.is_wayland()) return;
+
+        if (this.auto_tiler) {
+            Log.info(`tile by default disabled!`);
+            this.unregister_storage(this.auto_tiler.attached);
+            this.auto_tiler = null;
+            this.settings.set_tile_by_default(false);
+            this.tiling_toggle_switch.setToggleState(false);
+            this.button.icon.gicon = this.button_gio_icon_auto_off; // type: Gio.Icon
+        } else {
+            Log.info(`tile by default enabled!`);
+
+            const original = this.active_workspace();
+
+            let tiler = new auto_tiler.AutoTiler(
+                new Forest.Forest()
+                    .connect_on_attach((entity: Entity, window: Entity) => {
+                        tiler.attached.insert(window, entity);
+                    }),
+                this.register_storage()
+            );
+
+            this.auto_tiler = tiler;
+
+            this.settings.set_tile_by_default(true);
+            this.tiling_toggle_switch.setToggleState(true);
+            this.button.icon.gicon = this.button_gio_icon_auto_on; // type: Gio.Icon
+
+            for (const window of this.windows.values()) {
+                if (window.is_tilable(this)) {
+                    let actor = window.meta.get_compositor_private();
+                    if (actor) {
+                        if (!window.meta.minimized) {
+                            tiler.auto_tile(this, window, false);
+                        }
+                    }
+                }
+            }
+
+            this.register_fn(() => this.switch_to_workspace(original));
+        }
+    }
+
     unset_grab_op() {
         if (this.grab_op !== null) {
             let window = this.windows.get(this.grab_op.entity);
@@ -1157,6 +1229,9 @@ export class Ext extends Ecs.System<ExtEvent> {
             this.ignore_display_update = false;
             return;
         }
+
+        // Ignore the update if there are no monitors to assign to
+        if (layoutManager.monitors.length === 0) return;
 
         let updated = new Map();
 
@@ -1253,7 +1328,7 @@ export class Ext extends Ecs.System<ExtEvent> {
         return entity;
     }
 
-    /// Returns the window(s) that the mouse pointer is currently hoving above.
+    /// Returns the window(s) that the mouse pointer is currently hovering above.
     * windows_at_pointer(
         cursor: Rectangle,
         monitor: number,
@@ -1312,6 +1387,8 @@ function enable() {
         ext.register_fn(() => {
             if (ext?.auto_tiler) ext.snap_windows();
         });
+
+        ext.on_active_hint();
     }
 
     ext.signals_attach();
@@ -1335,10 +1412,19 @@ function disable() {
         ext.signals_remove();
         ext.exit_modes();
 
+        if (ext.settings.active_hint()) {
+            ext.active_hint?.untrack();
+        }
+
         layoutManager.removeChrome(ext.overlay);
 
         ext.keybindings.disable(ext.keybindings.global)
             .disable(ext.keybindings.window_focus)
+    }
+
+    if (indicator) {
+        indicator.destroy();
+        indicator = null;
     }
 }
 

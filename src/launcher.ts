@@ -1,30 +1,25 @@
+//@ts-ignore
 const Me = imports.misc.extensionUtils.getCurrentExtension();
 
 const { Clutter, GLib, Meta, St } = imports.gi;
-const { spawnCommandLine } = imports.misc.util;
-
-const { evaluate } = Me.imports.math.math;
 
 import * as app_info from 'app_info';
 import * as error from 'error';
 import * as lib from 'lib';
 import * as log from 'log';
-import * as once_cell from 'once_cell';
 import * as result from 'result';
 import * as search from 'search';
 import * as window from 'window';
+import * as launchers from 'launcherext';
+import * as widgets from 'widgets';
 
 import type { ShellWindow } from 'window';
-import type { Ext } from './extension';
-import type { AppInfo } from './app_info';
-
+import type { Ext } from 'extension';
+import type { AppInfo } from 'app_info';
 
 const { OK } = result;
 
 const HOME_DIR: string = GLib.get_home_dir();
-
-const LIST_MAX = 8;
-const ICON_SIZE = 34;
 
 /// Search paths for finding applications
 const SEARCH_PATHS: Array<[string, string]> = [
@@ -41,13 +36,16 @@ const SEARCH_PATHS: Array<[string, string]> = [
     ["Snap (system)", "/var/lib/snapd/desktop/applications/"]
 ];
 
-let TERMINAL = new once_cell.OnceCell<string>();
-
-const MODES = [':', 't:', '='];
+const MODES: launchers.LauncherExtension[] = [
+    new launchers.TerminalLauncher(),
+    new launchers.CommandLauncher(),
+    new launchers.CalcLauncher(),
+    new launchers.RecentDocumentLauncher(),
+];
 
 export class Launcher extends search.Search {
     selections: Array<ShellWindow | [string, AppInfo]>;
-    active: Array<[string, St.Widget, St.Widget]>;
+    active: Array<St.Widget>;
     desktop_apps: Array<[string, AppInfo]>;
     mode: number;
 
@@ -63,10 +61,20 @@ export class Launcher extends search.Search {
             this.mode = id;
         };
 
-        let search = (pattern: string): Array<[string, St.Widget, St.Widget]> | null => {
+        let search = (pattern: string): Array<St.Widget> | null => {
             this.selections.splice(0);
             this.active.splice(0);
             apps.splice(0);
+
+            if (this.mode !== -1) {
+                const launcher = MODES[this.mode].init(ext, this);
+                const results = launcher.search_results?.(pattern.slice(launcher.prefix.length).trim()) ?? null;
+                results?.forEach(result => {
+                    this.active.push(result);
+                });
+
+                return this.active;
+            }
 
             if (pattern.length == 0) {
                 this.list_workspace(ext);
@@ -112,29 +120,29 @@ export class Launcher extends search.Search {
             });
 
             // Truncate excess items from the list
-            this.selections.splice(LIST_MAX);
+            this.selections.splice(this.list_max());
 
             for (const selection of this.selections) {
-                let data: [string, St.Widget, St.Widget];
+                let data: St.Widget;
 
                 if (selection instanceof window.ShellWindow) {
-                    data = window_selection(ext, selection);
+                    data = window_selection(ext, selection, this.icon_size());
                 } else {
                     const [where, app] = selection;
                     const generic = app.generic_name();
 
-                    data = [
+                    data = new widgets.ApplicationBox(
                         generic ? `${generic} (${app.name()}) [${where}]` : `${app.name()} [${where}]`,
                         new St.Icon({
                             icon_name: 'application-default-symbolic',
-                            icon_size: ICON_SIZE / 2,
+                            icon_size: this.icon_size() / 2,
                             style_class: "pop-shell-search-cat"
                         }),
                         new St.Icon({
                             gicon: app.icon(),
-                            icon_size: ICON_SIZE
+                            icon_size: this.icon_size(),
                         })
-                    ];
+                    ).container;
                 }
 
                 this.active.push(data);
@@ -144,8 +152,6 @@ export class Launcher extends search.Search {
         };
 
         let select = (id: number) => {
-            if (this.mode !== -1) return;
-
             ext.overlay.visible = false;
 
             if (id >= this.selections.length) return;
@@ -163,11 +169,11 @@ export class Launcher extends search.Search {
             }
         };
 
-        let apply = (id: number | string) => {
+        let apply = (text: string, index: number) => {
             ext.overlay.visible = false;
 
-            if (typeof id === 'number') {
-                const selected = this.selections[id];
+            if (this.mode === -1) {
+                const selected = this.selections[index];
                 if (selected instanceof window.ShellWindow) {
                     selected.activate();
                 } else {
@@ -176,30 +182,16 @@ export class Launcher extends search.Search {
                         log.error(result.format());
                     }
                 }
-            } else if (id.startsWith('t:')) {
-                const cmd = id.slice(2).trim();
 
-                let terminal = TERMINAL.get_or_init(() => {
-                    let path: string | null = GLib.find_program_in_path('x-terminal-emulator');
-                    return path ?? 'gnome-terminal';
-                });
-
-                spawnCommandLine(`${terminal} -e sh -c '${cmd}; echo "Press to exit"; read t'`)
-            } else if (id.startsWith(':')) {
-                const cmd = id.slice(1).trim();
-                spawnCommandLine(cmd);
-            } else if (id.startsWith('=')) {
-                const expr = id.slice(1).trim();
-                const value: string = evaluate(expr).toString();
-                log.info(`${expr} = ${value}`);
-                this.set_text('= ' + value);
-                return true;
+                return false;
             }
 
-            return false;
+            const launcher = MODES[this.mode].init(ext, this);
+            log.info(`Launcher Mode: "${launcher.prefix}"`);
+            return launcher.apply(text.slice(launcher.prefix.length).trim(), index);
         };
 
-        super(MODES, cancel, search, select, apply, mode);
+        super(MODES.map(mode => mode.prefix), cancel, search, select, apply, mode);
 
         this.dialog.dialogLayout._dialog.y_align = Clutter.ActorAlign.START;
         this.dialog.dialogLayout._dialog.x_align = Clutter.ActorAlign.START;
@@ -236,9 +228,9 @@ export class Launcher extends search.Search {
             if (show_all_workspaces || window.workspace_id() === active) {
                 this.selections.push(window);
 
-                this.active.push(window_selection(ext, window));
+                this.active.push(window_selection(ext, window, this.icon_size()));
 
-                if (this.selections.length == LIST_MAX) break;
+                if (this.selections.length == this.list_max()) break;
             }
         }
     }
@@ -260,7 +252,7 @@ export class Launcher extends search.Search {
     }
 }
 
-function window_selection(ext: Ext, window: ShellWindow): [string, St.Widget, St.Widget] {
+function window_selection(ext: Ext, window: ShellWindow, icon_size: number): St.Widget {
     let name = window.name(ext);
     let title = window.meta.get_title();
 
@@ -268,13 +260,12 @@ function window_selection(ext: Ext, window: ShellWindow): [string, St.Widget, St
         name += ': ' + title;
     }
 
-    return [
+    return new widgets.ApplicationBox(
         name,
         new St.Icon({
             icon_name: 'focus-windows-symbolic',
-            icon_size: ICON_SIZE / 2,
+            icon_size: icon_size / 2,
             style_class: "pop-shell-search-cat"
         }),
-        window.icon(ext, ICON_SIZE)
-    ];
+        window.icon(ext, icon_size)).container;
 }

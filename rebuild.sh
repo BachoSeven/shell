@@ -1,3 +1,16 @@
+# Check if user confirmed overriding shortcuts
+if [ ! -f "./.confirm_shortcut_change" ]; then
+        read -p "Pop shell will override your default shortcuts. Are you sure? (y/n)"  CONT
+        if [[ ! "$CONT" =~ ^[Yy]$ ]]
+        then
+            [[ "$0" = "$BASH_SOURCE" ]] && exit 1 || return 1
+        else
+            touch "./.confirm_shortcut_change"
+        fi
+else
+        echo "Shortcut change confirmed"
+fi
+
 set -xe
 
 # Build and install extension
@@ -26,12 +39,18 @@ dconf write ${KEYS_GNOME_WM}/minimize "@as ['<Super>comma']"
 # Open the application menu: disable <Super>m
 echo "\"$(dconf read ${KEYS_GNOME_SHELL}/open-application-menu)\"" >> shortcuts_tmp
 dconf write ${KEYS_GNOME_SHELL}/open-application-menu "@as []"
+# Toggle message tray: disable <Super>m
+dconf write ${KEYS_GNOME_SHELL}/toggle-message-tray "@as ['<Super>v']"
 # Switch to workspace left: disable <Super>Left
 echo "\"$(dconf read ${KEYS_GNOME_WM}/switch-to-workspace-left)\"" >> shortcuts_tmp
 dconf write ${KEYS_GNOME_WM}/switch-to-workspace-left "@as []"
 # Switch to workspace right: disable <Super>Right
 echo "\"$(dconf read ${KEYS_GNOME_WM}/switch-to-workspace-right)\"" >> shortcuts_tmp
 dconf write ${KEYS_GNOME_WM}/switch-to-workspace-right "@as []"
+# Move to monitor up: disable <Super><Shift>Up
+dconf write ${KEYS_GNOME_WM}/move-to-monitor-up "@as []"
+# Move to monitor down: disable <Super><Shift>Down
+dconf write ${KEYS_GNOME_WM}/move-to-monitor-down "@as []"
 
 # Super + direction keys, move window left and right monitors, or up and down workspaces
 # Move window one monitor to the left
